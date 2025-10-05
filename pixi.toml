@@ -1,0 +1,30 @@
+[workspace]
+authors = ["Abhay Vashist <abhay.vashist@draup.com>"]
+channels = ["conda-forge"]
+name = "role-embedding"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.9,<3.13"
+psycopg2-binary = ">=2.9.10,<3"
+pandas = ">=2.3.1,<3"
+numpy = ">=2.3.2,<3"
+scipy = ">=1.16.1,<2"
+
+[pypi-dependencies]
+ipykernel = ">=6.30.1, <7"
+matplotlib = ">=3.10.5, <4"
+scikit-learn = ">=1.7.1, <2"
+plotly = { version = ">=6.2.0, <7", extras = ["express"] }
+torch = ">=2.8.0, <3"
+sentence-transformers = ">=5.1.1, <6"
+datasets = ">=4.1.1, <5"
+transformers = { version = ">=4.53.3, <5", extras = ["troch"] }
+accelerate = ">=1.10.1, <2"
+peft = ">=0.17.1, <0.18"
+bitsandbytes = ">=0.42.0, <0.43"
+tensorboard = ">=2.20.0, <3"
+optimum-quanto = ">=0.2.7, <0.3"

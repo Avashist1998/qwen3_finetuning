@@ -1,0 +1,7 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+datasets
+peft_lab_outputs
+__pycache__
