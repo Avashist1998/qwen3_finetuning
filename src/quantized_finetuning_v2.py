@@ -133,7 +133,7 @@ def preprocess_function(examples):
     }
     return result
 
-if args.dataset_size != -1:
+if args.dataset_size:
     dataset = dataset.select(range(args.dataset_size))
 
 tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names)
