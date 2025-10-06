@@ -1,0 +1,144 @@
+import argparse
+import pandas as pd
+from random import shuffle
+from typing import TypedDict, cast
+import numpy as np
+import ast
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dataset_size", type=int, default=100)
+parser.add_argument("--ner_based", type=bool, default=False)
+args = parser.parse_args()
+args.output_path = f"datasets/training_set/{args.dataset_size}_{'ner' if args.ner_based else 'non_ner'}.json"
+
+
+dataset_size = args.dataset_size
+df = pd.read_csv("datasets/raw_jd_data.csv")
+print(f"Shape of the dataset: {df.shape}")
+# Parse the string representations back to lists
+df["cleaned_requirements"] = df["candidate_requirements"].apply(
+    lambda x: ast.literal_eval(x) if pd.notna(x) and isinstance(x, str) and x.startswith('[') else []
+)
+df["cleaned_responsibilities"] = df["cleaned_responsibilities"].apply(
+    lambda x: ast.literal_eval(x) if pd.notna(x) and isinstance(x, str) and x.startswith('[') else []
+)
+
+df = df[~df["cleaned_requirements"].isna() | ~df["cleaned_responsibilities"].isna()]
+
+
+def format_job_description(row):
+    job_role = row["job_role"]
+    job_requirements = row["cleaned_requirements"]
+    job_responsibilities = row["cleaned_responsibilities"]
+    job_responsibilities = "\n".join(job_responsibilities)
+    job_requirements = "\n".join(job_requirements)
+
+    prompt = f"""Role: {job_role}
+    Job Responsibilities:
+    {job_responsibilities}
+    Job Requirements:
+    {job_requirements}
+    """
+    return prompt
+
+if args.ner_based:
+    df["job_description"] = df.apply(format_job_description, axis=1)
+else:
+    df["job_description"] = df["translated_job_description"]
+
+
+df = df.sample(args.dataset_size)
+print(f"Shape of the dataset after sampling: {df.shape}")
+
+class Triplet(TypedDict):
+    sentence1: str
+    sentence2: str
+    labels: float
+
+
+def generate_triplet(df, positive_index: int, number_of_triplets: int) -> list[Triplet]:
+
+    """Generate triplets for training
+    - Input will be the full job description
+    - So a positive example is picked from a same job role 
+    - Negative is picked from a random outside that role
+    """
+
+    anchor = df.iloc[positive_index]["job_description"]
+    anchor_role = df.iloc[positive_index]["job_role"]
+
+    # Get indices of rows with same role (excluding the anchor itself)
+    same_role_mask = (df["job_role"] == anchor_role) & (df.index != df.iloc[positive_index].name)
+    same_role_indices = df[same_role_mask].index.tolist()
+    
+    # Get indices of rows with different roles
+    different_role_mask = df["job_role"] != anchor_role
+    different_role_indices = df[different_role_mask].index.tolist()
+    
+    # Check if we have enough examples
+    if len(same_role_indices) < number_of_triplets:
+        print(f"Warning: Only {len(same_role_indices)} examples of same role available, but {number_of_triplets} requested")
+        number_of_triplets = len(same_role_indices)
+        if number_of_triplets == 0:
+            return []
+    
+    if len(different_role_indices) < number_of_triplets:
+        print(f"Warning: Only {len(different_role_indices)} examples of different role available, but {number_of_triplets} requested")
+        number_of_triplets = min(number_of_triplets, len(different_role_indices))
+        if number_of_triplets == 0:
+            return []
+    
+    # Pick random indices from same role (excluding anchor)
+    positive_indices = np.random.choice(same_role_indices, size=number_of_triplets, replace=False)
+    positive_jds = df.loc[positive_indices]["job_description"].tolist()
+    postitive_job_roles = df.loc[positive_indices]["job_role"].tolist()[0]
+    # Pick random indices from different roles
+    negative_indices = np.random.choice(different_role_indices, size=number_of_triplets, replace=False)
+    negative_jds = df.loc[negative_indices]["job_description"].tolist()
+    negative_job_roles = df.loc[negative_indices]["job_role"].tolist()[0]
+    triplets = []
+    for positive_jd, negative_jd in zip(positive_jds, negative_jds):
+        triplets.append({
+            "sentence1": anchor,
+            "sentence2": positive_jd,
+            "labels": 0.0,
+            "anchor_job_role": anchor_role,
+            "postitive_job_roles": postitive_job_roles,
+            
+        })
+        triplets.append({
+            "sentence1": anchor,
+            "sentence2": negative_jd,
+            "labels": 1.0,
+            "anchor_job_role": anchor_role,
+            "negative_job_roles": negative_job_roles,
+        })
+
+    return triplets
+
+training_set = []
+stats = {
+    "number_of_input_docs": args.dataset_size,
+    "number_row_processed": 0,
+    "number_of_triplets_generated": 0,
+    "job_based_stats": {}
+}
+for i in range(args.dataset_size):
+    try:
+        triplets = generate_triplet(df, i, 1)
+        stats["number_row_processed"] += 1
+        stats["number_of_triplets_generated"] += len(triplets)
+        stats["job_based_stats"][df.iloc[i]["job_role"]] = stats["job_based_stats"].get(df.iloc[i]["job_role"], 0) + 1
+    except Exception as e:
+        # print(f"Error generating triplets for {i}th row: {e}")
+        continue
+    training_set.extend(triplets)
+
+print(f"Generated {len(training_set)} triplets")
+print(json.dumps(stats, indent=4))
+
+
+shuffle(training_set)
+with open(args.output_path, "w") as f:
+    json.dump(training_set, f, indent=4)
