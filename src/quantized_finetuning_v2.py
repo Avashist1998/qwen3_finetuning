@@ -10,13 +10,28 @@ from transformers import AutoModel, AutoTokenizer, data
 from peft import LoraConfig, get_peft_model, TaskType
 import argparse
 from datetime import datetime
+import json
+import numpy as np
 
 
 
 def main(args):
     
+    # Load training dataset
     dataset_name = args.dataset_path
     dataset = Dataset.from_json(dataset_name)
+
+    # Load or create validation dataset
+    if args.eval_dataset_path:
+        print(f"Loading validation dataset from: {args.eval_dataset_path}")
+        eval_dataset = Dataset.from_json(args.eval_dataset_path)
+    else:
+        # Split dataset into train and validation
+        print(f"Splitting dataset with validation ratio: {args.validation_split}")
+        dataset = dataset.shuffle(seed=42)
+        split_idx = int(len(dataset) * (1 - args.validation_split))
+        eval_dataset = dataset.select(range(split_idx, len(dataset)))
+        dataset = dataset.select(range(split_idx))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -26,7 +41,8 @@ def main(args):
     print(f"Output directory: {output_directory}/{args.run_name}")
 
     # Debug: print first example to see structure
-    print(f"Dataset: {dataset.shape}")
+    print(f"Training dataset: {dataset.shape}")
+    print(f"Validation dataset: {eval_dataset.shape}")
     print("Dataset columns:", dataset.column_names)
 
 
@@ -51,9 +67,42 @@ def main(args):
         sum_mask = torch.sum(mask_expanded, dim=1)
         return sum_embeddings / sum_mask
 
+    # Compute metrics function for evaluation
+    def compute_metrics(eval_pred):
+        """
+        Compute Mean Squared Error (MSE) for evaluating model performance using PyTorch.
+        Measures how close predicted similarity scores are to true labels.
+        """
+        predictions, labels = eval_pred
+        
+        # Convert numpy arrays to PyTorch tensors for consistent computation
+        predictions_tensor = torch.tensor(predictions, dtype=torch.float32)
+        labels_tensor = torch.tensor(labels, dtype=torch.float32)
+        
+        # Calculate MSE using PyTorch
+        mse = F.mse_loss(predictions_tensor, labels_tensor, reduction='mean')
+        
+        # Calculate RMSE (Root Mean Squared Error) for interpretability
+        rmse = torch.sqrt(mse)
+        
+        # Calculate MAE (Mean Absolute Error) as an additional metric
+        mae = F.l1_loss(predictions_tensor, labels_tensor, reduction='mean')
+        
+        # Calculate R² score (coefficient of determination)
+        # R² = 1 - (SS_res / SS_tot)
+        ss_res = torch.sum((labels_tensor - predictions_tensor) ** 2)
+        ss_tot = torch.sum((labels_tensor - torch.mean(labels_tensor)) ** 2)
+        r2_score = 1 - (ss_res / ss_tot) if ss_tot > 0 else torch.tensor(0.0)
+        
+        return {
+            "mse": mse.item(),
+            "rmse": rmse.item(),
+            "mae": mae.item(),
+            "r2_score": r2_score.item(),
+        }
+
     # Custom trainer class that handles sentence pair training
     class SentencePairTrainer(Trainer):
-
 
         def compute_loss(self, model, inputs: dict[str, Union[torch.Tensor, Any]], return_outputs: bool = False, num_items_in_batch: Optional[torch.Tensor] = None):
             """Custom loss computation for sentence pairs"""
@@ -63,7 +112,6 @@ def main(args):
             input_ids_2 = inputs.get("input_ids_2")
             attention_mask_2 = inputs.get("attention_mask_2")
             labels = inputs.get("labels")
-
 
             try:
                 # Get embeddings for sentence 1
@@ -97,6 +145,25 @@ def main(args):
             loss = F.binary_cross_entropy(cos_sim_scaled, labels_float, reduction='mean')
             
             return (loss, {"cos_sim": cos_sim_scaled}) if return_outputs else loss
+        
+        def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+            """
+            Custom prediction step to return cosine similarity scores for metrics computation.
+            """
+            has_labels = "labels" in inputs
+            inputs = self._prepare_inputs(inputs)
+            
+            with torch.no_grad():
+                # Compute loss and get outputs
+                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                cos_sim_scaled = outputs["cos_sim"]
+                
+            if prediction_loss_only:
+                return (loss, None, None)
+            
+            # Return predictions (cosine similarities) and labels
+            labels = inputs.get("labels")
+            return (loss, cos_sim_scaled, labels)
 
     def preprocess_function(examples):
         queries = examples["sentence1"]
@@ -128,10 +195,14 @@ def main(args):
 
     if args.dataset_size:
         dataset = dataset.select(range(args.dataset_size))
+        eval_dataset = eval_dataset.select(range(min(args.dataset_size // 5, len(eval_dataset))))
 
-    print(f"Dataset size: {len(dataset)}")
+    print(f"Training dataset size: {len(dataset)}")
+    print(f"Validation dataset size: {len(eval_dataset)}")
 
+    # Tokenize both datasets
     tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names)
+    tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names)
 
     def validate_dataset(dataset: Dataset):
         for i in range(len(dataset)):
@@ -158,31 +229,38 @@ def main(args):
                 raise Exception(f"Attention mask 2 for index {i} is empty {dataset[i]['attention_mask_2']}")
 
     validate_dataset(tokenized_dataset)
+    validate_dataset(tokenized_eval_dataset)
 
-    # Shuffle the dataset
+    # Shuffle the training dataset
     tokenized_dataset = tokenized_dataset.shuffle(seed=42)
     # print(f"Shuffled dataset size: {len(tokenized_dataset)}")
 
     training_args = TrainingArguments(
         output_dir=os.path.join(output_directory, args.run_name),
-        auto_find_batch_size=True, # Find a correct bvatch size that fits the size of Data.
+        auto_find_batch_size=True, # Find a correct batch size that fits the size of Data.
         learning_rate= 3e-2, # Higher learning rate than full fine-tuning.
         num_train_epochs=args.num_of_epochs,
         per_device_train_batch_size=2,
+        per_device_eval_batch_size=4,  # Larger batch size for evaluation
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
         save_strategy="epoch",
         remove_unused_columns=False,
         label_names=["labels"],
 
-        # logging
+        # Evaluation settings
+        load_best_model_at_end=True,  # Load best model at the end
+        metric_for_best_model="eval_mse",  # Use MSE to determine best model
+        eval_strategy="epoch",
+        greater_is_better=False,  # Lower MSE is better
+
+        # Logging
         logging_strategy="steps",
         logging_steps=10,
         logging_dir=os.path.join(output_directory, "logs", args.run_name),
         logging_first_step=True,
 
         report_to="tensorboard",
-        # evaluation_strategy="no",
     )
 
 
@@ -190,24 +268,76 @@ def main(args):
         model=model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        eval_dataset=tokenized_eval_dataset,
+        compute_metrics=compute_metrics,
     )
 
-    trainer.train()
-    trainer.save_model(output_directory)
+    # Train the model
+    train_result = trainer.train(resume_from_checkpoint=args.from_checkpoint)
+    
+    # Save the final model
+    trainer.save_model(os.path.join(output_directory, args.run_name))
+    
+    # Save training metrics
+    metrics = train_result.metrics
+    metrics["train_samples"] = len(tokenized_dataset)
+    metrics["eval_samples"] = len(tokenized_eval_dataset)
+    
+    trainer.log_metrics("train", metrics)
+    trainer.save_metrics("train", metrics)
+    trainer.save_state()
+    
+    # Run final evaluation
+    print("\n" + "="*50)
+    print("Running final evaluation on validation set...")
+    print("="*50)
+    eval_metrics = trainer.evaluate()
+    trainer.log_metrics("eval", eval_metrics)
+    trainer.save_metrics("eval", eval_metrics)
+    
+    # Print summary
+    print("\n" + "="*50)
+    print("Training Summary:")
+    print("="*50)
+    print(f"Final training loss: {metrics.get('train_loss', 'N/A'):.4f}")
+    print(f"Final validation loss: {eval_metrics.get('eval_loss', 'N/A'):.4f}")
+    print(f"\nValidation Metrics (PyTorch-based):")
+    print(f"  MSE:  {eval_metrics.get('eval_mse', 'N/A'):.4f}")
+    print(f"  RMSE: {eval_metrics.get('eval_rmse', 'N/A'):.4f}")
+    print(f"  MAE:  {eval_metrics.get('eval_mae', 'N/A'):.4f}")
+    print(f"  R² Score: {eval_metrics.get('eval_r2_score', 'N/A'):.4f}")
+    print("="*50)
 
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser(description="Fine-tune embedding model with evaluation metrics")
+    
+    # Model and run configuration
+    parser.add_argument("--run_name", type=str, default=f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}",
+                        help="Name for this training run")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-Embedding-0.6B",
+                        help="Hugging Face model ID")
+    
+    # Dataset configuration
+    parser.add_argument("--dataset_path", type=str, default="datasets/mini_dataset_v2.json",
+                        help="Path to training dataset (JSON format)")
+    parser.add_argument("--eval_dataset_path", type=str, default=None,
+                        help="Path to separate evaluation dataset (JSON format). If not provided, will split from training data.")
+    parser.add_argument("--validation_split", type=float, default=0.2,
+                        help="Fraction of data to use for validation when eval_dataset_path is not provided (default: 0.2)")
+    
+    # Training configuration
+    parser.add_argument("--num_of_epochs", type=int, default=2,
+                        help="Number of training epochs")
+    parser.add_argument("--dataset_size", type=int, default=None,
+                        help="Limit dataset size for faster experimentation (default: use all data)")
+    
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default=f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
-    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-Embedding-0.6B")
-    parser.add_argument("--dataset_path", type=str, default="datasets/mini_dataset_v2.json")
-    parser.add_argument("--num_of_epochs", type=int, default=2)
-    parser.add_argument("--dataset_size", type=int, default=None)
+    parser.add_argument("--from_checkpoint", type=bool, default=None,
+                        help="Path to checkpoint to load from")
 
     args = parser.parse_args()
-
     
     main(args)
 

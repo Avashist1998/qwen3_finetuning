@@ -1,11 +1,12 @@
-from src.simple_inference import load_finetuned_model, get_similarity, load_base_model, extract_sentence_embedding_from_hidden_states
 import argparse
 import json
 import numpy as np
 import torch
 import torch.nn.functional as F
-
 import matplotlib.pyplot as plt
+
+from src.simple_inference import load_finetuned_model, get_similarity, load_base_model, extract_sentence_embedding_from_hidden_states
+from src.utils import mean_intra_inter_pytorch
 
 def pytorch_pca(data, n_components=3):
     """
@@ -267,80 +268,6 @@ def print_score_in_table(scores: dict):
         row = f"| {role} |" + " | ".join(row_values) + " |"
         print(row)
 
-
-
-
-def mean_intra_inter_pytorch(embeddings, job_roles):
-    """
-    Calculate mean intra-class and inter-class similarities using PyTorch.
-    
-    Args:
-        embeddings: torch.Tensor of shape (N, D) - normalized embeddings
-        job_roles: list of job role labels for each embedding
-    
-    Returns:
-        tuple: (mean_intra_similarity, mean_inter_similarity, separation_score)
-    """
-    # Convert string labels to integer indices for tensor operations
-    unique_roles = list(set(job_roles))
-    role_to_idx = {role: idx for idx, role in enumerate(unique_roles)}
-    job_role_indices = torch.tensor([role_to_idx[role] for role in job_roles], device=embeddings.device)
-    
-    intra_vals = []
-    unique_role_indices = torch.unique(job_role_indices)
-    
-    # Calculate intra-class similarities
-    for role_idx in unique_role_indices:
-        # Get indices for this role
-        idx = (job_role_indices == role_idx).nonzero(as_tuple=True)[0]
-        
-        if len(idx) < 2:
-            continue
-            
-        # Get embeddings for this role
-        role_embeddings = embeddings[idx]
-        
-        # Calculate pairwise similarities (cosine similarity since embeddings are normalized)
-        sims = torch.mm(role_embeddings, role_embeddings.t())
-        
-        # Take upper triangular excluding diagonal
-        mask = torch.triu(torch.ones_like(sims), diagonal=1).bool()
-        intra_similarities = sims[mask]
-        intra_vals.append(intra_similarities)
-    
-    # Concatenate all intra-class similarities
-    if intra_vals:
-        intra_vals = torch.cat(intra_vals)
-        mean_intra = torch.mean(intra_vals).item()
-    else:
-        mean_intra = 0.0
-    
-    # Calculate inter-class similarities (sample pairs from different roles)
-    N = embeddings.shape[0]
-    S = min(200000, N * (N - 1) // 2)
-    
-    # Set random seed for reproducibility
-    torch.manual_seed(0)
-    
-    # Sample random pairs
-    a = torch.randint(0, N, (S,), device=embeddings.device)
-    b = torch.randint(0, N, (S,), device=embeddings.device)
-    
-    # Filter pairs where job roles are different
-    mask = job_role_indices[a] != job_role_indices[b]
-    a_filtered = a[mask]
-    b_filtered = b[mask]
-    
-    if len(a_filtered) > 0:
-        # Calculate cosine similarities for inter-class pairs
-        inter_similarities = torch.sum(embeddings[a_filtered] * embeddings[b_filtered], dim=1)
-        mean_inter = torch.mean(inter_similarities).item()
-    else:
-        mean_inter = 0.0
-    
-    separation_score = mean_intra - mean_inter
-    
-    return mean_intra, mean_inter, separation_score
 
 def main():
 
