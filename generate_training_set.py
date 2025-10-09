@@ -11,9 +11,9 @@ import json
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset_path", type=str, default="datasets/raw_jd_data.csv")
 parser.add_argument("--dataset_size", type=int, default=100)
-#parser.add_argument("--ner_based", type=bool, default=False)
-parser.add_argument("--type", type=str, default="ner", choices=["ner", "org", "hybrid"])
+parser.add_argument("--type", type=str, default="ner", choices=["ner", "org", "hybrid", "sentence_based"])
 parser.add_argument("--num_of_negative_examples", type=int, default=3)
+
 args = parser.parse_args()
 args.output_path = f"datasets/training_set/{args.dataset_size}_{args.type}.json"
 
@@ -50,6 +50,97 @@ class Triplet(TypedDict):
     sentence1: str
     sentence2: str
     labels: float
+
+
+def generate_sentences_for_role(row: pd.Series) -> list[str]:
+    """Generate sentences for a role"""
+    assert row["cleaned_requirements"] is not None and row["cleaned_responsibilities"] is not None, "Make sure we have requirements and responsibilities"
+    assert len(row["cleaned_requirements"]) > 0 and len(row["cleaned_responsibilities"]) > 0, "Make sure the input is not empty"
+    assert isinstance(row["cleaned_requirements"], list) and isinstance(row["cleaned_responsibilities"], list), "Make sure the input is list"
+    assert isinstance(row["cleaned_requirements"][0], str) and isinstance(row["cleaned_responsibilities"][0], str), f"Requirements: {row['cleaned_requirements']}, Responsibilities: {row['cleaned_responsibilities']}"
+    sentences = row["cleaned_requirements"] + row["cleaned_responsibilities"]
+    random.shuffle(sentences)
+    return sentences
+
+
+
+def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_examples: int) -> list[Triplet]:
+    """Generate sentence based triplets"""
+    anchor = df.iloc[positive_index]["roles_sentences"]
+    anchor_role = df.iloc[positive_index]["job_role"]
+    anchor_job_family = df.iloc[positive_index]["job_family"]
+    # Get indices of rows with same role (excluding the anchor itself)
+    same_role_mask = (df["job_role"] == anchor_role) & (df.index != df.iloc[positive_index].name)
+    same_role_indices = df[same_role_mask].index.tolist()
+    # Get indices of rows with same job family (excluding the anchor itself)
+    same_family_mask = (df["job_family"] == anchor_job_family) & (df.index != df.iloc[positive_index].name)
+    same_family_indices = df[same_family_mask].index.tolist()
+    # Get indices of rows with different roles
+    different_role_mask = df["job_role"] != anchor_role
+    different_role_indices = df[different_role_mask].index.tolist()
+
+
+
+    # Check if we have enough examples
+    if len(same_role_indices) < 1:
+        print(f"Warning: Only {len(same_role_indices)} examples of same role available, but 1 requested")
+        num_of_negative_examples = len(same_role_indices)
+        if num_of_negative_examples == 0:
+            return []
+    
+    if len(different_role_indices) < num_of_negative_examples:
+        print(f"Warning: Only {len(different_role_indices)} examples of different role available, but {num_of_negative_examples} requested")
+        num_of_negative_examples = min(num_of_negative_examples, len(different_role_indices))
+        if num_of_negative_examples == 0:
+            return []
+
+    # Pick random indices from same role (excluding anchor)
+    positive_indices = np.random.choice(same_role_indices, size=1)
+    positive_sentences = df.loc[positive_indices]["roles_sentences"].tolist()
+    postitive_job_role = df.loc[positive_indices]["job_role"].tolist()[0]
+
+    # Same job family Example (different role but same family)
+    if len(same_family_indices) > 0:
+        job_family_index = np.random.choice(same_family_indices, size=1)[0]
+        job_family_sentences = df.loc[job_family_index, "roles_sentences"]
+        job_family_job_role = df.loc[job_family_index, "job_role"]
+
+    # Pick random indices from different roles
+    negative_indices = np.random.choice(different_role_indices, size=num_of_negative_examples)
+    negative_sentences = df.loc[negative_indices]["roles_sentences"].tolist()
+    negative_job_roles = df.loc[negative_indices]["job_role"].tolist()
+    triplets = []
+    for positive_sentence in positive_sentences:
+        triplets.append({
+            "sentence1": anchor,
+            "sentence2": np.random.choice(positive_sentence, replace=False, size=1)[0],
+            "labels": 0.2,
+            "anchor_job_role": anchor_role,
+            "postitive_job_roles": postitive_job_role,
+            
+        })
+
+    if len(same_family_indices) > 0:
+        triplets.append({
+            "sentence1": anchor,
+            "sentence2": np.random.choice(job_family_sentences, size=1)[0],
+            "labels": 0.6,
+            "anchor_job_role": anchor_role,
+            "job_family_job_role": job_family_job_role,
+        })
+
+    for negative_job_role, negative_sentence in zip(negative_job_roles, negative_sentences):
+        triplets.append({
+            "sentence1": anchor,
+            "sentence2": np.random.choice(negative_sentence, replace=False, size=1)[0],
+            "labels": 1.0,
+            "anchor_job_role": anchor_role,
+            "negative_job_roles": negative_job_role,
+        })
+
+    return triplets
+
+
 
 
 def generate_triplet(df, positive_index: int, num_of_negative_examples: int) -> list[Triplet]:
@@ -158,13 +249,19 @@ elif args.type == "hybrid":
         lambda row: row["formatted_job_description"] if random.random() < 0.5 else row["translated_job_description"], 
         axis=1
     )
+elif args.type == "sentence_based":
+    df["roles_sentences"] = df.apply(generate_sentences_for_role, axis=1)
+
 else:
     df["job_description"] = df["translated_job_description"]
 
 
 for i in random_set:
     try:
-        triplets = generate_triplet(df, i, args.num_of_negative_examples)
+        if args.type == "sentence_based":
+            triplets = generate_sentence_based_triplet(df, i, args.num_of_negative_examples)
+        else:
+            triplets = generate_triplet(df, i, args.num_of_negative_examples)
         stats["number_row_processed"] += 1
         stats["number_of_triplets_generated"] += len(triplets)
         stats["job_based_stats"][df.iloc[i]["job_role"]] = stats["job_based_stats"].get(df.iloc[i]["job_role"], 0) + 1

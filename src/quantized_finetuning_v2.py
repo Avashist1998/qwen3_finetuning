@@ -10,8 +10,6 @@ from transformers import AutoModel, AutoTokenizer, data
 from peft import LoraConfig, get_peft_model, TaskType
 import argparse
 from datetime import datetime
-import json
-import numpy as np
 
 
 
@@ -167,7 +165,7 @@ def main(args):
 
     def preprocess_function(examples):
         queries = examples["sentence1"]
-        max_length = 512
+        max_length = args.max_length
         sentence1_encodings = tokenizer(queries, 
             padding="max_length", 
             max_length=max_length, 
@@ -206,8 +204,8 @@ def main(args):
 
     def validate_dataset(dataset: Dataset):
         for i in range(len(dataset)):
-            if type(dataset[i]["labels"]) != int:
-                print(dataset[i]["labels"])
+            if type(dataset[i]["labels"]) not in [int, float]:
+                print(dataset[i]["labels"], type(dataset[i]["labels"]))
                 raise Exception(f"Label for index {i} is not a float {dataset[i]['labels']} {type(dataset[i]['labels'])}")
             
             if len(dataset[i]["input_ids_1"]) == 0:
@@ -338,6 +336,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--from_checkpoint", type=bool, default=None,
                         help="Path to checkpoint to load from")
+
+
+    parser.add_argument("--max_length", type=int, default=512,
+                        help="Maximum length of the input tokens")
 
     args = parser.parse_args()
     

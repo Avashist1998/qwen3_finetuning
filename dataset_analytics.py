@@ -4,6 +4,49 @@ import numpy as np
 from collections import Counter
 
 
+def analyze_processed_dataset(file_path: str):
+
+    """Analayzed the dataset file
+
+    """
+    # Load the dataset
+    print(f"\n{'='*80}")
+    print(f"DATASET ANALYTICS: {file_path}")
+    print(f"{'='*80}\n")
+    df = pd.read_json(file_path)
+
+    # Basic counts
+    print("📊 BASIC STATISTICS")
+    print("-" * 80)
+    print(f"Total number of records: {len(df):,}")
+    print()
+    
+    labels_counts = df.groupby("labels").size()
+    print(f"{'Label':<3} {'Count':<10}")
+    print("-" * 20)
+    for label, count in labels_counts.items():
+        print(f"{label:<10} {count:<10}")
+    print()
+
+    sentence_length = df["sentence1"].apply(len) + df["sentence2"].apply(len)
+    print(f"Average sentence length: {sentence_length.mean():.2f}")
+    print(f"Median sentence length: {sentence_length.median():.2f}")
+    print(f"Standard deviation: {sentence_length.std():.2f}")
+    print(f"Minimum sentence length: {sentence_length.min():.2f}")
+    print(f"Maximum sentence length: {sentence_length.max():.2f}")
+    print(f"Range: {sentence_length.max() - sentence_length.min():.2f}")
+
+
+    print(f"25th percentile: {np.percentile(sentence_length, 25):.2f}")
+    print(f"75th percentile: {np.percentile(sentence_length, 75):.2f}")
+    print(f"90th percentile: {np.percentile(sentence_length, 90):.2f}")
+    print(f"95th percentile: {np.percentile(sentence_length, 95):.2f}")
+    print(f"99th percentile: {np.percentile(sentence_length, 99):.2f}")
+
+    print()
+
+
+
 def analyze_dataset(file_path: str):
     """
     Analyze dataset and provide comprehensive statistics.
@@ -174,19 +217,31 @@ def analyze_dataset(file_path: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze job dataset statistics")
+
     parser.add_argument(
-        "--dataset_path", 
+        "--type",
+        type=str,
+        default="raw",
+        help="Type of dataset to analyze",
+        choices=["raw", "processed"]
+    )
+
+    parser.add_argument(
+        "--path", 
         type=str, 
         default="datasets/8k_raw_jd_data.csv",
         help="Path to the dataset CSV file"
     )
     
     args = parser.parse_args()
-    
+
     try:
-        analyze_dataset(args.dataset_path)
+        if args.type == "processed":
+            analyze_processed_dataset(args.path)
+        else:
+            analyze_dataset(args.path)
     except FileNotFoundError:
-        print(f"❌ Error: File not found at '{args.dataset_path}'")
+        print(f"❌ Error: File not found at '{args.path}'")
     except Exception as e:
         print(f"❌ Error analyzing dataset: {e}")
         import traceback
