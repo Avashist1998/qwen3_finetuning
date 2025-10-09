@@ -244,14 +244,16 @@ def main(args):
         per_device_eval_batch_size=4,  # Larger batch size for evaluation
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
-        save_strategy="epoch",
+        save_strategy="steps",  # Changed to match eval_strategy
+        save_steps=200,  # Save at same frequency as eval
         remove_unused_columns=False,
         label_names=["labels"],
 
         # Evaluation settings
         load_best_model_at_end=True,  # Load best model at the end
         metric_for_best_model="eval_mse",  # Use MSE to determine best model
-        eval_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=50,
         greater_is_better=False,  # Lower MSE is better
 
         # Logging
