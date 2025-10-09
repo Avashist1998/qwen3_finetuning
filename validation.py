@@ -225,7 +225,7 @@ def parse_args():
     parser.add_argument("--model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/eval_test/checkpoint-9")
     parser.add_argument("--company", type=str, default="Draup Inc.")
-    parser.add_argument("--is_lora", type=bool, default=False)
+    parser.add_argument("--use_lora", type=bool, default=False)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--top_n", type=int, default=3, help="Number of top similar roles to find")
     return parser.parse_args()
@@ -249,7 +249,7 @@ if __name__ == "__main__":
         data = data[:args.batch_size]
     
 
-    if args.is_lora:
+    if args.use_lora:
         model, tokenizer = load_finetuned_model(base_model_path=args.model_path, peft_model_path=args.peft_model_path)
     else:
         model, tokenizer = load_base_model(base_model_path=args.model_path)
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     for index, row in data.iterrows():
         tokenized = tokenizer(row["job_description"], 
             padding="max_length", 
-            max_length=512, 
+            max_length=1024, 
             truncation=True, 
             return_tensors="pt")
         input_ids.append(tokenized["input_ids"].squeeze(0).to(model.device))
@@ -270,10 +270,20 @@ if __name__ == "__main__":
     input_ids = torch.stack(input_ids)
     attention_masks = torch.stack(attention_masks)
     print(input_ids.shape, attention_masks.shape)
+    extracted_embeddings = []
+    batch_size = 15
     with torch.no_grad():
-        hidden_states = model(input_ids=input_ids, attention_mask=attention_masks).last_hidden_state
-        extracted_embeddings = extract_sentence_embedding_from_hidden_states(hidden_states, attention_masks)
-
+        # Batching the input ids and attention masks into chunks of batch_size
+        for i in range(0, input_ids.shape[0], batch_size):
+            end_idx = min(i + batch_size, input_ids.shape[0])
+            batch_input_ids = input_ids[i:end_idx]
+            batch_attention_masks = attention_masks[i:end_idx]
+            
+            hidden_states = model(input_ids=batch_input_ids, attention_mask=batch_attention_masks).last_hidden_state
+            batch_embeddings = extract_sentence_embedding_from_hidden_states(hidden_states, batch_attention_masks)
+            extracted_embeddings.append(batch_embeddings)
+    
+    extracted_embeddings = torch.cat(extracted_embeddings, dim=0)
     extracted_embeddings = extracted_embeddings.cpu().numpy()
     
     # Get similar roles
@@ -283,7 +293,7 @@ if __name__ == "__main__":
     print_results_formatted(res, top_n=args.top_n)
     
     # Export to CSV
-    csv_file = export_to_csv(res, top_n=args.top_n, is_lora_model=args.is_lora)
+    csv_file = export_to_csv(res, top_n=args.top_n, is_lora_model=args.use_lora)
     print(f"\n✅ Results exported to: {csv_file}")
     print(f"   Showing top {args.top_n} similar roles per source role")
     print(f"   Total rows in CSV: {sum(min(len(item.get('similar_roles', [])), args.top_n) or 1 for item in res)}")
