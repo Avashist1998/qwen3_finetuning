@@ -4,6 +4,8 @@ import json
 import numpy as np
 from typing import Dict, List, Any
 from datetime import datetime
+import torch
+import re
 
 import argparse
 from src.simple_inference import load_finetuned_model, get_similarity, load_base_model, extract_sentence_embedding_from_hidden_states
@@ -230,12 +232,11 @@ def parse_args():
     parser.add_argument("--top_n", type=int, default=3, help="Number of top similar roles to find")
     return parser.parse_args()
 
-import torch
-
 
 def clean_string_and_unicode(string: str):
     string = string.encode('utf-8', errors='ignore')
     string = string.decode('utf-8')
+    string = re.sub(r'<[^>]*>', '', string)
     return string
 
 if __name__ == "__main__":
@@ -260,7 +261,7 @@ if __name__ == "__main__":
     for index, row in data.iterrows():
         tokenized = tokenizer(row["job_description"], 
             padding="max_length", 
-            max_length=1024, 
+            max_length=2048, 
             truncation=True, 
             return_tensors="pt")
         input_ids.append(tokenized["input_ids"].squeeze(0).to(model.device))
@@ -271,7 +272,7 @@ if __name__ == "__main__":
     attention_masks = torch.stack(attention_masks)
     print(input_ids.shape, attention_masks.shape)
     extracted_embeddings = []
-    batch_size = 15
+    batch_size = 30
     with torch.no_grad():
         # Batching the input ids and attention masks into chunks of batch_size
         for i in range(0, input_ids.shape[0], batch_size):

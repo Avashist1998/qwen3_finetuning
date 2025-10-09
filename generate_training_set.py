@@ -1,3 +1,5 @@
+import re
+import random
 import argparse
 import pandas as pd
 from random import shuffle
@@ -140,10 +142,13 @@ stats = {
     "job_based_stats": {}
 }
 
-import random
+
 index = list(range(df.shape[0]))
 random.shuffle(index)
 random_set = index[:args.dataset_size]
+
+
+df["translated_job_description"] = df["translated_job_description"].apply(lambda x: re.sub(r'<[^>]*>', '', x))
 
 if args.type == "ner":
     df["job_description"] = df.apply(format_job_description, axis=1)
