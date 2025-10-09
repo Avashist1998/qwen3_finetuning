@@ -1,5 +1,32 @@
-# Important commands 
+# Setting up training machine 
 
+### Clone the repo
+
+#### create .venv
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements
+```
+
+#### Copy the dataset to local
+```sh
+rsync -avzP  /Users/avashist/Documents/datasets VastAI:/root/qwen3_finetuning/datasets
+```
+
+#### Add the current checkpoints and logs
+```sh
+rsync -avzP /Users/avashist/Documents/models/peft_lab_outputs VastAI:/root/qwen3_finetuning/peft_lab_outputs 
+```
+
+#### Tensorboard
+```sh
+nohup tensorboard --logdir ./ &
+```
+
+
+## Serving the model in production
 
 ## Creating ta LORA adaptor file from Checkpoint
 ```sh

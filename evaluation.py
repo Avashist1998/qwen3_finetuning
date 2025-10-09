@@ -36,7 +36,7 @@ def pytorch_pca(data, n_components=3):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str, default="finetuned")
-    parser.add_argument("--evaluation_dataset_path", type=str, default="datasets/evaluation_dataset.json")
+    parser.add_argument("--dataset_path", type=str, default="datasets/evaluation_set/evaluation_dataset.json")
     parser.add_argument("--base_model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--quantization", type=bool, default=True)
     parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/checkpoint-1328")
@@ -284,7 +284,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    evaluation_dataset = load_evaluation_dataset(args.evaluation_dataset_path)
+    evaluation_dataset = load_evaluation_dataset(args.dataset_path)
     if args.max_samples:
         evaluation_dataset = evaluation_dataset[:args.max_samples]
     print(f"Using {len(evaluation_dataset)} samples for evaluation")
