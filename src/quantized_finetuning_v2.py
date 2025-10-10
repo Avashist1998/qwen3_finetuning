@@ -198,6 +198,10 @@ def main(args):
     print(f"Training dataset size: {len(dataset)}")
     print(f"Validation dataset size: {len(eval_dataset)}")
 
+    # # Tokenize both datasets use this one the gpu memory issue
+    # tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True)
+    # tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True)
+
     # Tokenize both datasets
     tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names)
     tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names)

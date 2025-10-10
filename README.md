@@ -5,19 +5,19 @@
 #### create .venv
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements
+python3 -m venv .venv;
+source .venv/bin/activate;
+pip install -r requirements.txt;
 ```
 
 #### Copy the dataset to local
 ```sh
-rsync -avzP  /Users/avashist/Documents/datasets VastAI:/root/qwen3_finetuning/datasets
+rsync -avzP  /Users/avashist/Documents/projects/role-embedding/datasets VastAI:/workspace/qwen3_finetuning/
 ```
 
 #### Add the current checkpoints and logs
 ```sh
-rsync -avzP /Users/avashist/Documents/models/peft_lab_outputs VastAI:/root/qwen3_finetuning/peft_lab_outputs 
+rsync -avzP /Users/avashist/Documents/projects/role-embedding/peft_lab_outputs VastAI:/workspace/qwen3_finetuning/
 ```
 
 #### Tensorboard
@@ -25,6 +25,17 @@ rsync -avzP /Users/avashist/Documents/models/peft_lab_outputs VastAI:/root/qwen3
 nohup tensorboard --logdir ./ &
 ```
 
+#### Pull Models from the machine 
+```sh
+rsync -avzP VastAI:/workspace/qwen3_finetuning/peft_lab_outputs /Users/avashist/Documents/projects/role-embedding/
+rsync -avzP VastAI:/workspace/qwen3_finetuning/results /Users/avashist/Documents/projects/role-embedding/
+```
+
+
+#### Trainig Model
+```sh
+python3 src/quantized_finetuning_v2.py --run_name two_card_test --dataset_path datasets/training_set/500_ner.json --num_of_epochs 8 --max_length 2048
+```
 
 ## Serving the model in production
 

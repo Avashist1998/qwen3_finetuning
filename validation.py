@@ -90,7 +90,7 @@ def print_results_formatted(results: List[Dict[str, Any]], top_n: int = 3) -> No
     print("\n" + "=" * 100 + "\n")
 
 
-def export_to_csv(results: List[Dict[str, Any]], output_file: str = None, top_n: int = 3, is_lora_model: bool = False) -> str:
+def export_to_csv(results: List[Dict[str, Any]], output_file: str = None, /, top_n: int = 3,  model_name: str = "not_given", is_lora_model: bool = False) -> str:
     """
     Export the role adjacency results to a CSV file for Excel analysis.
     
@@ -104,7 +104,7 @@ def export_to_csv(results: List[Dict[str, Any]], output_file: str = None, top_n:
     """
     if output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"role_adjacency_results_{timestamp}_{'lora' if is_lora_model else 'base'}.csv"
+        output_file = f"results/role_adjacency_{model_name}_{timestamp}_{'lora' if is_lora_model else 'base'}.csv"
     
     # Flatten the nested structure for CSV
     flattened_data = []
@@ -228,8 +228,10 @@ def parse_args():
     parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/eval_test/checkpoint-9")
     parser.add_argument("--company", type=str, default="Draup Inc.")
     parser.add_argument("--use_lora", type=bool, default=False)
-    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--top_n", type=int, default=3, help="Number of top similar roles to find")
+    parser.add_argument("--dataset_size", type=int, default=None)
     return parser.parse_args()
 
 
@@ -246,13 +248,14 @@ if __name__ == "__main__":
     data = data[["role", "job_family", "job_description"]]
     data["job_description"] = data["job_description"].apply(clean_string_and_unicode)
 
-    if args.batch_size:
-        data = data[:args.batch_size]
-    
+    if args.dataset_size:
+        data = data[:args.dataset_size]
 
     if args.use_lora:
         model, tokenizer = load_finetuned_model(base_model_path=args.model_path, peft_model_path=args.peft_model_path)
+        model_name = "_".join(args.peft_model_path.split("/")[-2:])
     else:
+        model_name = args.model_path.split("/")[-1]
         model, tokenizer = load_base_model(base_model_path=args.model_path)
 
 
@@ -261,7 +264,7 @@ if __name__ == "__main__":
     for index, row in data.iterrows():
         tokenized = tokenizer(row["job_description"], 
             padding="max_length", 
-            max_length=2048, 
+            max_length=args.max_length, 
             truncation=True, 
             return_tensors="pt")
         input_ids.append(tokenized["input_ids"].squeeze(0).to(model.device))
@@ -272,7 +275,7 @@ if __name__ == "__main__":
     attention_masks = torch.stack(attention_masks)
     print(input_ids.shape, attention_masks.shape)
     extracted_embeddings = []
-    batch_size = 30
+    batch_size = args.batch_size
     with torch.no_grad():
         # Batching the input ids and attention masks into chunks of batch_size
         for i in range(0, input_ids.shape[0], batch_size):
@@ -294,7 +297,7 @@ if __name__ == "__main__":
     print_results_formatted(res, top_n=args.top_n)
     
     # Export to CSV
-    csv_file = export_to_csv(res, top_n=args.top_n, is_lora_model=args.use_lora)
+    csv_file = export_to_csv(res, top_n=args.top_n, is_lora_model=args.use_lora, model_name=model_name)
     print(f"\n✅ Results exported to: {csv_file}")
     print(f"   Showing top {args.top_n} similar roles per source role")
     print(f"   Total rows in CSV: {sum(min(len(item.get('similar_roles', [])), args.top_n) or 1 for item in res)}")

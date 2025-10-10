@@ -33,16 +33,21 @@ df = df[~df["cleaned_requirements"].isna() | ~df["cleaned_responsibilities"].isn
 df = df[~df["cleaned_requirements"].apply(lambda x: len(x) == 0) & ~df["cleaned_responsibilities"].apply(lambda x: len(x) == 0)]
 
 def format_job_description(row):
-    job_role = row["job_role"]
-    job_requirements = row["cleaned_requirements"]
-    job_responsibilities = row["cleaned_responsibilities"]
-    job_responsibilities = "\n".join(job_responsibilities)
-    job_requirements = "\n".join(job_requirements)
+    # job_role = row["job_role"]
+    # job_requirements = row["cleaned_requirements"]
+    # job_responsibilities = row["cleaned_responsibilities"]
+    # job_responsibilities = "\n".join(chunks[:len(chunks)//2])
+    # job_requirements = "\n".join(chunks[len(chunks)//2:])
 
-    prompt = f"""{job_responsibilities}
-    {job_requirements}
-    """
-    return prompt
+    # text = f"""{job_responsibilities}
+    # {job_requirements}
+    # """
+    chunks = row["cleaned_requirements"] + row["cleaned_responsibilities"]
+    random.shuffle(chunks)
+    text = " ".join(chunks)
+    text = text.encode("utf-8", errors="ignore")
+    text = text.decode("utf-8")
+    return text
 
 
 
