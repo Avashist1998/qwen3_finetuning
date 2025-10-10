@@ -247,7 +247,8 @@ def main(args):
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
         save_strategy="steps",  # Changed to match eval_strategy
-        save_steps=200,  # Save at same frequency as eval
+        save_steps=100,  # Save at same frequency as eval
+        save_total_limit=5,
         remove_unused_columns=False,
         label_names=["labels"],
 

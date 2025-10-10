@@ -8,7 +8,7 @@ import torch
 import re
 
 import argparse
-from src.simple_inference import load_finetuned_model, get_similarity, load_base_model, extract_sentence_embedding_from_hidden_states
+from src.simple_inference import load_finetuned_model, load_base_model, extract_sentence_embedding_from_hidden_states
 
 
 def parse_args():
@@ -164,8 +164,10 @@ def export_to_csv(results: List[Dict[str, Any]], output_file: str = None, /, top
     
     return output_file
 
+import numpy as np
+import torch.nn.functional as F
 
-def get_similar_roles(data: pd.DataFrame, embeddings: np.ndarray, top_n: int = 3):
+def get_similar_roles(data: pd.DataFrame, embeddings: torch.Tensor, top_n: int = 3, company: str = "Draup Inc."):
     """
     Find similar roles based on mean embeddings.
     
@@ -177,41 +179,22 @@ def get_similar_roles(data: pd.DataFrame, embeddings: np.ndarray, top_n: int = 3
     Returns:
         List of dictionaries containing role and similar roles data
     """
-    import numpy as np
-    from sklearn.metrics.pairwise import cosine_similarity
     
-    # Add embeddings to dataframe temporarily
-    data_with_embeddings = data.copy()
-    data_with_embeddings['embedding'] = list(embeddings)
+    # Compute cosine similarity using PyTorch (more efficient than sklearn)
+    # Normalize embeddings to unit vectors
+    embedding_normalized = F.normalize(embeddings, p=2, dim=1)
+    # Compute similarity matrix via matrix multiplication (dot product of normalized vectors = cosine similarity)
+    similarity_matrix = torch.mm(embedding_normalized, embedding_normalized.t())
+
+    # Convert from [-1, 1] to [0, 1] range
+    similarity_matrix = (similarity_matrix + 1) / 2
     
-    # Group by role and compute mean embedding for each unique role
-    role_embeddings = {}
-    role_info = {}
-    
-    for role_name, group in data_with_embeddings.groupby("role"):
-        # Stack all embeddings for this role and compute mean
-        role_embs = np.stack(group['embedding'].values)
-        mean_embedding = np.mean(role_embs, axis=0)
-        role_embeddings[role_name] = mean_embedding
-        
-        # Store role info (use first occurrence)
-        role_info[role_name] = {
-            'role': role_name,
-            'job_family': group['job_family'].iloc[0],
-            'company': 'Draup Inc.'  # Default company
-        }
-    
-    # Convert to arrays for similarity computation
-    role_names = list(role_embeddings.keys())
-    embedding_matrix = np.stack([role_embeddings[name] for name in role_names])
-    
-    # Compute cosine similarity between all role pairs
-    similarity_matrix = cosine_similarity(embedding_matrix)
-    similarity_matrix = (similarity_matrix + 1)/2
+    # Convert back to numpy for compatibility with rest of code
+    similarity_matrix = similarity_matrix.numpy()
     
     # For each role, find top N most similar roles (excluding itself)
     results = []
-    for i, role_name in enumerate(role_names):
+    for i, role_name in enumerate(data["role"]):
         # Get similarity scores for this role
         similarities = similarity_matrix[i]
         
@@ -223,14 +206,16 @@ def get_similar_roles(data: pd.DataFrame, embeddings: np.ndarray, top_n: int = 3
         similar_roles = []
         for idx in top_indices:
             similar_roles.append({
-                'job_role': role_names[idx],
+                "company": company,
+                'job_role': data["role"].iloc[idx],
                 'score': float(similarities[idx]),
                 'normalized_score': float(similarities[idx])  # Already normalized with cosine similarity
             })
         
         # Add to results
-        result_item = role_info[role_name].copy()
+        result_item = data.iloc[i].copy()
         result_item['similar_roles'] = similar_roles
+        # result_item['company'] = data["company"].iloc[i]
         results.append(result_item)
     
     return results
@@ -375,11 +360,11 @@ if __name__ == "__main__":
     final_embeddings = summed_embeddings / counts
     
     print(f"Final embeddings shape: {final_embeddings.shape} (averaged from {len(data_chunks_df)} chunks)")
-    extracted_embeddings = final_embeddings.numpy()
-
-
     # Get similar roles
-    res = get_similar_roles(data, extracted_embeddings, top_n=args.top_n)
+    res = get_similar_roles(data, final_embeddings, top_n=args.top_n, company=args.company)
+
+    for item in res:
+        item["company"] = args.company
 
     # Display formatted results
     print_results_formatted(res, top_n=args.top_n)
