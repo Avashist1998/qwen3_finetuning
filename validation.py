@@ -10,6 +10,20 @@ import re
 import argparse
 from src.simple_inference import load_finetuned_model, get_similarity, load_base_model, extract_sentence_embedding_from_hidden_states
 
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset_path", type=str, default="datasets/validation_set/roles_2.csv")
+    parser.add_argument("--model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/eval_test/checkpoint-9")
+    parser.add_argument("--company", type=str, default="Draup Inc.")
+    parser.add_argument("--use_lora", type=bool, default=False)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=2048)
+    parser.add_argument("--top_n", type=int, default=3, help="Number of top similar roles to find")
+    parser.add_argument("--dataset_size", type=int, default=None)
+    return parser.parse_args()
+
 def print_results_formatted(results: List[Dict[str, Any]], top_n: int = 3) -> None:
     """
     Print the role adjacency results in a nicely formatted CLI output.
@@ -221,18 +235,6 @@ def get_similar_roles(data: pd.DataFrame, embeddings: np.ndarray, top_n: int = 3
     
     return results
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_path", type=str, default="datasets/validation_set/roles_2.csv")
-    parser.add_argument("--model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B")
-    parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/eval_test/checkpoint-9")
-    parser.add_argument("--company", type=str, default="Draup Inc.")
-    parser.add_argument("--use_lora", type=bool, default=False)
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--max_length", type=int, default=2048)
-    parser.add_argument("--top_n", type=int, default=3, help="Number of top similar roles to find")
-    parser.add_argument("--dataset_size", type=int, default=None)
-    return parser.parse_args()
 
 
 def clean_string_and_unicode(string: str):
@@ -240,6 +242,18 @@ def clean_string_and_unicode(string: str):
     string = string.decode('utf-8')
     string = re.sub(r'<[^>]*>', '', string)
     return string
+
+
+def split_to_chunks(text: str, chunk_size: int = 1000) -> List[str]:
+    """
+    Split the data into chunks of chunk_size
+    """
+    chunks = []
+    for i in range(0, len(text), chunk_size):
+        chunks.append(text[i:i+chunk_size])
+    return chunks
+
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -259,21 +273,68 @@ if __name__ == "__main__":
         model, tokenizer = load_base_model(base_model_path=args.model_path)
 
 
-    # Tokenize all the descriptions
-    input_ids, attention_masks = [], []
-    for index, row in data.iterrows():
-        tokenized = tokenizer(row["job_description"], 
-            padding="max_length", 
-            max_length=args.max_length, 
-            truncation=True, 
-            return_tensors="pt")
-        input_ids.append(tokenized["input_ids"].squeeze(0).to(model.device))
-        attention_masks.append(tokenized["attention_mask"].squeeze(0).to(model.device))
+    # # Tokenize all the descriptions
+    # input_ids, attention_masks = [], []
+    # for index, row in data.iterrows():
+    #     tokenized = tokenizer(row["job_description"], 
+    #         padding="max_length", 
+    #         max_length=args.max_length, 
+    #         truncation=True, 
+    #         return_tensors="pt")
+    #     input_ids.append(tokenized["input_ids"].squeeze(0).to(model.device))
+    #     attention_masks.append(tokenized["attention_mask"].squeeze(0).to(model.device))
     
 
-    input_ids = torch.stack(input_ids)
-    attention_masks = torch.stack(attention_masks)
-    print(input_ids.shape, attention_masks.shape)
+    # input_ids = torch.stack(input_ids)
+    # attention_masks = torch.stack(attention_masks)
+    # print(input_ids.shape, attention_masks.shape)
+    # extracted_embeddings = []
+    # batch_size = args.batch_size
+    # with torch.no_grad():
+    #     # Batching the input ids and attention masks into chunks of batch_size
+    #     for i in range(0, input_ids.shape[0], batch_size):
+    #         end_idx = min(i + batch_size, input_ids.shape[0])
+    #         batch_input_ids = input_ids[i:end_idx]
+    #         batch_attention_masks = attention_masks[i:end_idx]
+            
+    #         hidden_states = model(input_ids=batch_input_ids, attention_mask=batch_attention_masks).last_hidden_state
+    #         batch_embeddings = extract_sentence_embedding_from_hidden_states(hidden_states, batch_attention_masks)
+    #         extracted_embeddings.append(batch_embeddings)
+    
+    # extracted_embeddings = torch.cat(extracted_embeddings, dim=0)
+    # extracted_embeddings = extracted_embeddings.cpu().numpy()
+
+
+
+    # Special Tokenization considering larger datasets
+    # Convert long text into chunks
+    # create a table to the job_description and the chunks expanded
+    # so the same job description should up multiple times in the table
+    # but the chunks should be unique
+
+    description_id = []
+    data_chunks = []
+    for idx in range(len(data)):
+        chunks = split_to_chunks(data.iloc[idx]["job_description"], chunk_size=args.max_length)
+        description_id.extend([idx] * len(chunks))
+        data_chunks.extend(chunks)
+
+    data_chunks_df = pd.DataFrame({"description_id": description_id, "job_description": data_chunks})
+    print(f"Created {len(data_chunks_df)} chunks from {len(data)} descriptions")
+
+    # OPTIMIZATION 1: Batch tokenization instead of one-by-one
+    # Tokenize all chunks at once - this is MUCH faster than looping
+    tokenized = tokenizer(
+        data_chunks_df["job_description"].tolist(),
+        padding="max_length",
+        max_length=args.max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    
+    input_ids = tokenized["input_ids"].to(model.device)
+    attention_masks = tokenized["attention_mask"].to(model.device)
+    print(f"Tokenized input shape: {input_ids.shape}, {attention_masks.shape}")
     extracted_embeddings = []
     batch_size = args.batch_size
     with torch.no_grad():
@@ -286,10 +347,37 @@ if __name__ == "__main__":
             hidden_states = model(input_ids=batch_input_ids, attention_mask=batch_attention_masks).last_hidden_state
             batch_embeddings = extract_sentence_embedding_from_hidden_states(hidden_states, batch_attention_masks)
             extracted_embeddings.append(batch_embeddings)
-    
+
+    # Concatenate all batched embeddings into a single tensor
     extracted_embeddings = torch.cat(extracted_embeddings, dim=0)
-    extracted_embeddings = extracted_embeddings.cpu().numpy()
     
+    # OPTIMIZATION 2: Vectorized grouping and averaging using torch scatter operations
+    # This is faster than looping through unique IDs
+    extracted_embeddings_cpu = extracted_embeddings.cpu()
+    
+    # Create a mapping from description_id to embedding indices
+    description_ids = torch.tensor(data_chunks_df["description_id"].values, dtype=torch.long)
+    unique_ids, inverse_indices = torch.unique(description_ids, return_inverse=True)
+    
+    # Use scatter_add for efficient grouping (sum all embeddings per group)
+    embedding_dim = extracted_embeddings_cpu.shape[1]
+    num_descriptions = len(unique_ids)
+    summed_embeddings = torch.zeros(num_descriptions, embedding_dim)
+    
+    # Expand inverse_indices for scatter operation
+    inverse_indices_expanded = inverse_indices.unsqueeze(1).expand(-1, embedding_dim)
+    summed_embeddings.scatter_add_(0, inverse_indices_expanded, extracted_embeddings_cpu)
+    
+    # Count chunks per description for averaging
+    counts = torch.bincount(inverse_indices).unsqueeze(1).float()
+    
+    # Average: divide sum by count
+    final_embeddings = summed_embeddings / counts
+    
+    print(f"Final embeddings shape: {final_embeddings.shape} (averaged from {len(data_chunks_df)} chunks)")
+    extracted_embeddings = final_embeddings.numpy()
+
+
     # Get similar roles
     res = get_similar_roles(data, extracted_embeddings, top_n=args.top_n)
 
