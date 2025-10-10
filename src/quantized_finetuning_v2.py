@@ -140,7 +140,7 @@ def main(args):
             labels_float = labels.float().squeeze()
             
             # Binary cross entropy loss
-            loss = F.binary_cross_entropy(cos_sim_scaled, labels_float, reduction='mean')
+            loss = F.mse_loss(cos_sim_scaled, labels_float, reduction='mean')
             
             return (loss, {"cos_sim": cos_sim_scaled}) if return_outputs else loss
         
