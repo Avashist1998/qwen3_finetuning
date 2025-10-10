@@ -48,8 +48,10 @@ def main(args):
     model_id = args.model_id
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     base_model = AutoModel.from_pretrained(model_id)
+    # base_model = AutoModel.from_pretrained(model_id, attn_implementation="flash_attention_2")
+
     lora_config = LoraConfig(
-        r=2,
+        r=4, # Change to two to make on mac
         lora_alpha=16,
         target_modules=["q_proj", "k_proj", "v_proj"],
         lora_dropout=0.05,
@@ -246,6 +248,7 @@ def main(args):
         per_device_eval_batch_size=4,  # Larger batch size for evaluation
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
+        bf16=device != "cpu", # Specific for the training
         save_strategy="steps",  # Changed to match eval_strategy
         save_steps=100,  # Save at same frequency as eval
         save_total_limit=5,
