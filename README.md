@@ -38,9 +38,9 @@ rsync -avzP VastAI:/workspace/qwen3_finetuning/results /Users/avashist/Documents
 
 #### Trainig Model
 ```sh
-python3 src/quantized_finetuning_v2.py --run_name two_card_test --dataset_path datasets/training_set/500_ner.json --num_of_epochs 8 --max_length 2048
+python3 src/quantized_finetuning_v2.py --run_name 500_sen_8196_r_4_1000 --dataset_path datasets/training_set/5000_sentence_based.json --num_of_epochs 16 --max_length 8196 --dataset_size 1000 --eval_dataset_path datasets/evaluation_set/500_sentence_based.json
 ```
-python3 src/quantized_finetuning_v2.py --run_name 5000_test_2048 --dataset_path datasets/training_set/5000_ner.json --num_of_epochs 8 --max_length 2048
+
 
 ## Serving the model in production
 

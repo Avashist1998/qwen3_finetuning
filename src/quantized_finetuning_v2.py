@@ -244,13 +244,13 @@ def main(args):
         auto_find_batch_size=True, # Find a correct batch size that fits the size of Data.
         learning_rate= 3e-2, # Higher learning rate than full fine-tuning.
         num_train_epochs=args.num_of_epochs,
-        per_device_train_batch_size=2,
+        per_device_train_batch_size=4, # Change to 2 for mac
         per_device_eval_batch_size=4,  # Larger batch size for evaluation
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
         bf16=device != "cpu", # Specific for the training
         save_strategy="steps",  # Changed to match eval_strategy
-        save_steps=100,  # Save at same frequency as eval
+        save_steps=50,  # Save at same frequency as eval
         save_total_limit=5,
         remove_unused_columns=False,
         label_names=["labels"],
