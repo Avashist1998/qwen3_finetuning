@@ -35,13 +35,15 @@ def pytorch_pca(data, n_components=3):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--type", type=str, default="finetuned")
+    parser.add_argument("--type", type=str, default="finetuned", choices=["finetuned", "base"])
     parser.add_argument("--dataset_path", type=str, default="datasets/evaluation_set/evaluation_dataset.json")
-    parser.add_argument("--base_model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--base_model_path", type=str, default="Qwen/Qwen3-Embedding-0.6B", choices=["Qwen/Qwen3-Embedding-0.6B", "Qwen/Qwen3-Embedding-4B", "Qwen/Qwen3-Embedding-8B"])
     parser.add_argument("--quantization", type=bool, default=True)
     parser.add_argument("--peft_model_path", type=str, default="./peft_lab_outputs/checkpoint-1328")
     parser.add_argument("--kind", type=str, default="similarity", choices=["similarity", "visualization"])
     parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples for visualization (default: all)")
+    parser.add_argument("--max_tokens", type=int, default=2048, help="Maximum number of tokens for evaluation (default: 2048)")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation (default: 8)")
     return parser.parse_args()
 
 
@@ -142,14 +144,14 @@ def get_batch_embeddings(model, tokenizer, texts, batch_size=8, max_length=1024)
     return torch.cat(all_embeddings, dim=0)
 
 
-def evaluate_model_ultra_optimized(model, tokenizer, evaluation_dataset):
+def evaluate_model_ultra_optimized(model, tokenizer, evaluation_dataset, max_length):
     """Ultra-optimized version using PyTorch vectorized operations."""
     print("Computing embeddings for all texts...")
     
     # Pre-compute all embeddings (keep as tensors)
     all_texts = [item["text"] for item in evaluation_dataset]
     job_roles = [item["job_role"] for item in evaluation_dataset]
-    embeddings_tensor = get_batch_embeddings(model, tokenizer, all_texts, max_length=2048)
+    embeddings_tensor = get_batch_embeddings(model, tokenizer, all_texts, max_length=max_length)
     print("Computing similarity matrix...")
     # There is not difference when i check the embedding tensor
     diff_output = embeddings_tensor[0] != embeddings_tensor[1]
@@ -289,14 +291,14 @@ def main():
         evaluation_dataset = evaluation_dataset[:args.max_samples]
     print(f"Using {len(evaluation_dataset)} samples for evaluation")
     if args.kind == "similarity":
-        scores = evaluate_model_ultra_optimized(model, tokenizer, evaluation_dataset)
+        scores = evaluate_model_ultra_optimized(model, tokenizer, evaluation_dataset, max_length=args.max_tokens)
         print_score_in_table(scores)
         # print(json.dumps(scores, indent=4))
     elif args.kind == "visualization":
         roles = [item["job_role"] for item in evaluation_dataset]
         all_texts = [item["text"] for item in evaluation_dataset]
         print("Computing embeddings for visualization...")
-        batch_embeddings = get_batch_embeddings(model, tokenizer, all_texts, max_length=2048)
+        batch_embeddings = get_batch_embeddings(model, tokenizer, all_texts, max_length=args.max_tokens)
         print("Embeddings computed, creating visualization...")
         visualize_embeddings(batch_embeddings, roles)
     else:

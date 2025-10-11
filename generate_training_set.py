@@ -7,12 +7,13 @@ from typing import TypedDict, cast
 import numpy as np
 import ast
 import json
+import traceback
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset_path", type=str, default="datasets/raw_jd_data.csv")
 parser.add_argument("--dataset_size", type=int, default=100)
 parser.add_argument("--type", type=str, default="ner", choices=["ner", "org", "hybrid", "sentence_based"])
-parser.add_argument("--num_of_negative_examples", type=int, default=3)
+parser.add_argument("--num_of_negative_examples", type=int, default=4)
 
 args = parser.parse_args()
 args.output_path = f"datasets/training_set/{args.dataset_size}_{args.type}.json"
@@ -72,6 +73,7 @@ def generate_sentences_for_role(row: pd.Series) -> list[str]:
 def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_examples: int) -> list[Triplet]:
     """Generate sentence based triplets"""
     anchor = df.iloc[positive_index]["roles_sentences"]
+    anchor_text = " ".join(anchor)
     anchor_role = df.iloc[positive_index]["job_role"]
     anchor_job_family = df.iloc[positive_index]["job_family"]
     # Get indices of rows with same role (excluding the anchor itself)
@@ -81,7 +83,7 @@ def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_exa
     same_family_mask = (df["job_family"] == anchor_job_family) & (df.index != df.iloc[positive_index].name)
     same_family_indices = df[same_family_mask].index.tolist()
     # Get indices of rows with different roles
-    different_role_mask = df["job_role"] != anchor_role
+    different_role_mask = (df["job_role"] != anchor_role) & (~same_family_mask)
     different_role_indices = df[different_role_mask].index.tolist()
 
 
@@ -101,7 +103,8 @@ def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_exa
 
     # Pick random indices from same role (excluding anchor)
     positive_indices = np.random.choice(same_role_indices, size=1)
-    positive_sentences = df.loc[positive_indices]["roles_sentences"].tolist()
+    positive_sentences = df.loc[positive_indices]["roles_sentences"].values[0]
+    positive_sentences_text = " ".join(positive_sentences)
     postitive_job_role = df.loc[positive_indices]["job_role"].tolist()[0]
 
     # Same job family Example (different role but same family)
@@ -109,26 +112,26 @@ def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_exa
         job_family_index = np.random.choice(same_family_indices, size=1)[0]
         job_family_sentences = df.loc[job_family_index, "roles_sentences"]
         job_family_job_role = df.loc[job_family_index, "job_role"]
-
+        job_family_sentences_text = " ".join(job_family_sentences)
     # Pick random indices from different roles
     negative_indices = np.random.choice(different_role_indices, size=num_of_negative_examples)
     negative_sentences = df.loc[negative_indices]["roles_sentences"].tolist()
     negative_job_roles = df.loc[negative_indices]["job_role"].tolist()
+
     triplets = []
-    for positive_sentence in positive_sentences:
-        triplets.append({
-            "sentence1": anchor,
-            "sentence2": np.random.choice(positive_sentence, replace=False, size=1)[0],
-            "labels": 0.2,
-            "anchor_job_role": anchor_role,
-            "postitive_job_roles": postitive_job_role,
-            
-        })
+    triplets.append({
+        "sentence1": anchor_text,
+        "sentence2": positive_sentences_text,
+        "labels": 0.2,
+        "anchor_job_role": anchor_role,
+        "postitive_job_roles": postitive_job_role,
+        
+    })
 
     if len(same_family_indices) > 0:
         triplets.append({
-            "sentence1": anchor,
-            "sentence2": np.random.choice(job_family_sentences, size=1)[0],
+            "sentence1": anchor_text,
+            "sentence2": job_family_sentences_text,
             "labels": 0.6,
             "anchor_job_role": anchor_role,
             "job_family_job_role": job_family_job_role,
@@ -136,8 +139,8 @@ def generate_sentence_based_triplet(df, positive_index: int, num_of_negative_exa
 
     for negative_job_role, negative_sentence in zip(negative_job_roles, negative_sentences):
         triplets.append({
-            "sentence1": anchor,
-            "sentence2": np.random.choice(negative_sentence, replace=False, size=1)[0],
+            "sentence1": anchor_text,
+            "sentence2": " ".join(negative_sentence),
             "labels": 1.0,
             "anchor_job_role": anchor_role,
             "negative_job_roles": negative_job_role,
@@ -272,6 +275,7 @@ for i in random_set:
         stats["job_based_stats"][df.iloc[i]["job_role"]] = stats["job_based_stats"].get(df.iloc[i]["job_role"], 0) + 1
     except Exception as e:
         print(f"Error generating triplets for {i}th row: {e}")
+        print(traceback.format_exc())
         continue
     training_set.extend(triplets)
 

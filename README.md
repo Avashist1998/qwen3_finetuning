@@ -1,13 +1,17 @@
 # Setting up training machine 
 
 ### Clone the repo
+```sh
+git clone https://github.com/Avashist1998/qwen3_finetuning.git
+```
 
 #### create .venv
 
 ```sh
-python3 -m venv .venv;
+uv venv .venv;
 source .venv/bin/activate;
-pip install -r requirements.txt;
+uv pip install --upgrade pip;
+uv pip install -r requirements.txt;
 ```
 
 #### Copy the dataset to local
@@ -36,6 +40,7 @@ rsync -avzP VastAI:/workspace/qwen3_finetuning/results /Users/avashist/Documents
 ```sh
 python3 src/quantized_finetuning_v2.py --run_name two_card_test --dataset_path datasets/training_set/500_ner.json --num_of_epochs 8 --max_length 2048
 ```
+python3 src/quantized_finetuning_v2.py --run_name 5000_test_2048 --dataset_path datasets/training_set/5000_ner.json --num_of_epochs 8 --max_length 2048
 
 ## Serving the model in production
 

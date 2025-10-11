@@ -51,9 +51,9 @@ def main(args):
     # base_model = AutoModel.from_pretrained(model_id, attn_implementation="flash_attention_2")
 
     lora_config = LoraConfig(
-        r=4, # Change to two to make on mac
+        r=4, # Change to 2 to make on mac
         lora_alpha=16,
-        target_modules=["q_proj", "k_proj", "v_proj"],
+        target_modules=["q_proj", "v_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.FEATURE_EXTRACTION,
