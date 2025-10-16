@@ -1,16 +1,38 @@
 import os
 import torch
-import torch.nn.functional as F
-from typing import Optional, Union, Any, List, Dict
+from typing import Tuple
 from torch import nn
 from datasets import Dataset
 from transformers import TrainingArguments
-from transformers import AutoModel, AutoModelForSeq2SeqLM, AutoTokenizer, Trainer
-from transformers import AutoModel, AutoTokenizer, data
+from transformers import AutoTokenizer
+from transformers import AutoModel
 from peft import LoraConfig, get_peft_model, TaskType
 import argparse
 from datetime import datetime
+from src.dataloader import preprocess_function
+from src.sentence_traininer import SentencePairTrainer, compute_metrics
 
+
+R = 1 # r=2, r=4, # Change to 2 to make on mac
+
+def model_loader(model_id: str) -> Tuple[AutoModel, AutoTokenizer]:
+    """
+    Load the model and tokenizer.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    base_model = AutoModel.from_pretrained(model_id)
+    # base_model = AutoModel.from_pretrained(model_id, attn_implementation="flash_attention_2")
+    lora_config = LoraConfig(
+        
+        r=R,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.FEATURE_EXTRACTION,
+    )
+    model = get_peft_model(base_model, lora_config)
+    return model, tokenizer
 
 
 def main(args):
@@ -46,152 +68,8 @@ def main(args):
 
     # model_id = "Qwen/Qwen3-Embedding-0.6B"
     model_id = args.model_id
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    base_model = AutoModel.from_pretrained(model_id)
-    # base_model = AutoModel.from_pretrained(model_id, attn_implementation="flash_attention_2")
+    model, tokenizer = model_loader(model_id)
 
-    lora_config = LoraConfig(
-        r=4, # Change to 2 to make on mac
-        lora_alpha=16,
-        target_modules=["q_proj", "v_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type=TaskType.FEATURE_EXTRACTION,
-    )
-    model = get_peft_model(base_model, lora_config)
-
-
-    def extract_sentence_embedding_from_hidden_states(hidden_states, attention_mask):
-        mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size())
-        sum_embeddings = torch.sum(hidden_states * mask_expanded, dim=1)
-        sum_mask = torch.sum(mask_expanded, dim=1)
-        return sum_embeddings / sum_mask
-
-    # Compute metrics function for evaluation
-    def compute_metrics(eval_pred):
-        """
-        Compute Mean Squared Error (MSE) for evaluating model performance using PyTorch.
-        Measures how close predicted similarity scores are to true labels.
-        """
-        predictions, labels = eval_pred
-        
-        # Convert numpy arrays to PyTorch tensors for consistent computation
-        predictions_tensor = torch.tensor(predictions, dtype=torch.float32)
-        labels_tensor = torch.tensor(labels, dtype=torch.float32)
-        
-        # Calculate MSE using PyTorch
-        mse = F.mse_loss(predictions_tensor, labels_tensor, reduction='mean')
-        
-        # Calculate RMSE (Root Mean Squared Error) for interpretability
-        rmse = torch.sqrt(mse)
-        
-        # Calculate MAE (Mean Absolute Error) as an additional metric
-        mae = F.l1_loss(predictions_tensor, labels_tensor, reduction='mean')
-        
-        # Calculate R² score (coefficient of determination)
-        # R² = 1 - (SS_res / SS_tot)
-        ss_res = torch.sum((labels_tensor - predictions_tensor) ** 2)
-        ss_tot = torch.sum((labels_tensor - torch.mean(labels_tensor)) ** 2)
-        r2_score = 1 - (ss_res / ss_tot) if ss_tot > 0 else torch.tensor(0.0)
-        
-        return {
-            "mse": mse.item(),
-            "rmse": rmse.item(),
-            "mae": mae.item(),
-            "r2_score": r2_score.item(),
-        }
-
-    # Custom trainer class that handles sentence pair training
-    class SentencePairTrainer(Trainer):
-
-        def compute_loss(self, model, inputs: dict[str, Union[torch.Tensor, Any]], return_outputs: bool = False, num_items_in_batch: Optional[torch.Tensor] = None):
-            """Custom loss computation for sentence pairs"""
-
-            input_ids_1 = inputs.get("input_ids_1")
-            attention_mask_1 = inputs.get("attention_mask_1")
-            input_ids_2 = inputs.get("input_ids_2")
-            attention_mask_2 = inputs.get("attention_mask_2")
-            labels = inputs.get("labels")
-
-            try:
-                # Get embeddings for sentence 1
-                outputs1 = model(input_ids=input_ids_1, attention_mask=attention_mask_1)
-                hidden_states1 = outputs1.last_hidden_state
-                embeddings1 = extract_sentence_embedding_from_hidden_states(hidden_states1, attention_mask_1)
-            except Exception as e:
-                print(f"Some error happened for sentence 1 {input_ids_1} {attention_mask_1}")
-                raise e
-            
-            try:
-                # Get embeddings for sentence 2
-                outputs2 = model(input_ids=input_ids_2, attention_mask=attention_mask_2)
-                hidden_states2 = outputs2.last_hidden_state
-                embeddings2 = extract_sentence_embedding_from_hidden_states(hidden_states2, attention_mask_2)
-            except Exception as e:
-                print(f"Some error happened for sentence 2 {input_ids_2} {attention_mask_2}")
-                raise e
-            
-            # Compute cosine similarity
-            cos_sim = F.cosine_similarity(embeddings1, embeddings2)
-            
-            # Scale similarity to [0, 1] range
-            cos_sim_scaled = (cos_sim + 1) / 2
-            
-            # Ensure tensors are properly shaped for loss computation
-            cos_sim_scaled = cos_sim_scaled.squeeze()
-            labels_float = labels.float().squeeze()
-            
-            # Binary cross entropy loss
-            loss = F.mse_loss(cos_sim_scaled, labels_float, reduction='mean')
-            
-            return (loss, {"cos_sim": cos_sim_scaled}) if return_outputs else loss
-        
-        def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-            """
-            Custom prediction step to return cosine similarity scores for metrics computation.
-            """
-            has_labels = "labels" in inputs
-            inputs = self._prepare_inputs(inputs)
-            
-            with torch.no_grad():
-                # Compute loss and get outputs
-                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
-                cos_sim_scaled = outputs["cos_sim"]
-                
-            if prediction_loss_only:
-                return (loss, None, None)
-            
-            # Return predictions (cosine similarities) and labels
-            labels = inputs.get("labels")
-            return (loss, cos_sim_scaled, labels)
-
-    def preprocess_function(examples):
-        queries = examples["sentence1"]
-        max_length = args.max_length
-        sentence1_encodings = tokenizer(queries, 
-            padding="max_length", 
-            max_length=max_length, 
-            truncation=True, 
-            return_tensors="pt")
-
-        products = examples["sentence2"]
-        sentence2_encodings = tokenizer(products,
-            padding="max_length", 
-            max_length=max_length, 
-            truncation=True, 
-            return_tensors="pt")
-
-        # Debug: Check tokenization output
-        # print(f"sentence1_encodings keys: {sentence1_encodings.keys()}")
-        # print(f"input_ids shape: {len(sentence1_encodings['input_ids'])} x {len(sentence1_encodings['input_ids'][0])}")
-        result = {
-            "input_ids_1": sentence1_encodings["input_ids"],
-            "attention_mask_1": sentence1_encodings["attention_mask"],
-            "input_ids_2": sentence2_encodings["input_ids"],
-            "attention_mask_2": sentence2_encodings["attention_mask"],
-            "labels": torch.tensor(examples["labels"], dtype=torch.float)
-        }
-        return result
 
     if args.dataset_size:
         dataset = dataset.select(range(args.dataset_size))
@@ -201,42 +79,22 @@ def main(args):
     print(f"Validation dataset size: {len(eval_dataset)}")
 
     # # Tokenize both datasets use this one the gpu memory issue
-    # tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True)
-    # tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True)
+    # tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
+    # tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
 
     # Tokenize both datasets
-    tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names)
-    tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names)
+    tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
+    tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
+    
+    ## Set the format of the tokenized datasets to torch
+    tokenized_dataset.set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+    tokenized_eval_dataset.set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
 
-    def validate_dataset(dataset: Dataset):
-        for i in range(len(dataset)):
-            if type(dataset[i]["labels"]) not in [int, float]:
-                print(dataset[i]["labels"], type(dataset[i]["labels"]))
-                raise Exception(f"Label for index {i} is not a float {dataset[i]['labels']} {type(dataset[i]['labels'])}")
-            
-            if len(dataset[i]["input_ids_1"]) == 0:
-                raise Exception(f"Input ids 1 for index {i} is empty {dataset[i]['input_ids_1']}")
-            
-            if len(dataset[i]["input_ids_1"]) != len(dataset[i]["attention_mask_1"]):
-                raise Exception(f"Input ids 1 and attention mask 1 for index {i} have different shapes {dataset[i]['input_ids_1'].shape} != {dataset[i]['attention_mask_1'].shape}")
-            
-            if len(dataset[i]["input_ids_2"]) == 0:
-                raise Exception(f"Input ids 2 for index {i} is empty {dataset[i]['input_ids_2']}")
-            
-            if len(dataset[i]["input_ids_2"]) != len(dataset[i]["attention_mask_2"]):
-                raise Exception(f"Input ids 2 and attention mask 2 for index {i} have different shapes {dataset[i]['input_ids_2'].shape} != {dataset[i]['attention_mask_2'].shape}")
-            
-            if len(dataset[i]["attention_mask_1"]) == 0:
-                raise Exception(f"Attention mask 1 for index {i} is empty {dataset[i]['attention_mask_1']}")
-            
-            if len(dataset[i]["attention_mask_2"]) == 0:
-                raise Exception(f"Attention mask 2 for index {i} is empty {dataset[i]['attention_mask_2']}")
-
-    validate_dataset(tokenized_dataset)
-    validate_dataset(tokenized_eval_dataset)
-
-    # Shuffle the training dataset
-    tokenized_dataset = tokenized_dataset.shuffle(seed=42)
+    # # Validate the tokenized datasets
+    # validate_dataset(tokenized_dataset)
+    # validate_dataset(tokenized_eval_dataset)
+    # # Shuffle the training dataset
+    # tokenized_dataset = tokenized_dataset.shuffle(seed=42)
     # print(f"Shuffled dataset size: {len(tokenized_dataset)}")
 
     training_args = TrainingArguments(
@@ -249,6 +107,7 @@ def main(args):
         gradient_accumulation_steps=4,
         use_cpu=device == "cpu",
         bf16=device != "cpu", # Specific for the training
+        # bf16=False,
         save_strategy="steps",  # Changed to match eval_strategy
         save_steps=50,  # Save at same frequency as eval
         save_total_limit=5,
@@ -317,13 +176,10 @@ def main(args):
     print("="*50)
 
 
-if __name__ == "__main__":
-
+def quantization_args():
     parser = argparse.ArgumentParser(description="Fine-tune embedding model with evaluation metrics")
     
     # Model and run configuration
-    parser.add_argument("--run_name", type=str, default=f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}",
-                        help="Name for this training run")
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-Embedding-0.6B",
                         help="Hugging Face model ID")
     
@@ -349,7 +205,13 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=512,
                         help="Maximum length of the input tokens")
 
-    args = parser.parse_args()
-    
+    return parser.parse_args()
+
+if __name__ == "__main__":
+
+    args = quantization_args()
+
+
+    args.run_name = f'r{R}_max_length{args.max_length}_dataset_size{args.dataset_size}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
     main(args)
 

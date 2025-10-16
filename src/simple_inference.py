@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModel, AutoTokenizer, QuantoConfig
+from transformers import AutoModel, AutoTokenizer, QuantoConfig, BitsAndBytesConfig
 from peft import PeftModel
 import numpy as np
 from torch.nn.functional import cosine_similarity
@@ -50,6 +50,7 @@ def load_finetuned_model(base_model_path="Qwen/Qwen3-Embedding-0.6B",
     base_model = AutoModel.from_pretrained(base_model_path, quantization_config=config)    
     # Load fine-tuned LoRA weights
     model = PeftModel.from_pretrained(base_model, peft_model_path)
+    model = model.merge_and_unload()
     model.eval()
     
     print("Model loaded successfully!")
@@ -59,11 +60,21 @@ def load_finetuned_model(base_model_path="Qwen/Qwen3-Embedding-0.6B",
 def load_base_model(base_model_path="Qwen/Qwen3-Embedding-0.6B", quantization=True):
     """Load the base model for inference."""
     print("Loading base model...")
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
     config = None
+    # Check for MPS availability
+    import torch
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"Using device: {device}")
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
     if quantization:
-        config = QuantoConfig(weights="int8") 
-    base_model = AutoModel.from_pretrained(base_model_path, quantization_config=config)
+            config = QuantoConfig(weights="int8")
+            base_model = AutoModel.from_pretrained(base_model_path, quantization_config=config)
+    else:
+        base_model = AutoModel.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.bfloat16
+        )
+    # base_model = base_model.to(device)
     base_model.eval()
     return base_model, tokenizer
 
