@@ -38,13 +38,19 @@ rsync -avzP VastAI:/workspace/qwen3_finetuning/results /Users/avashist/Documents
 
 #### Trainig Model
 ```sh
-python3 src/quantized_finetuning_v2.py --run_name 500_sen_8196_r_4_1000 --dataset_path datasets/training_set/5000_sentence_based.json --num_of_epochs 16 --max_length 8196 --dataset_size 1000 --eval_dataset_path datasets/evaluation_set/500_sentence_based.json
+python3 src/quantized_finetuning_v2.py --run_name 500_sen_8196_r_4_1000 --dataset_path datasets/training_set/5000_sentence_based.json --num_of_epochs 16 --max_length 8196 --dataset_size 3000 --eval_dataset_path datasets/evaluation_set/500_sentence_based.json --from_checkpoint True
+```
+python3 src/quantized_finetuning_v2.py --run_name 5000_test_2048 --dataset_path datasets/training_set/5000_ner.json --num_of_epochs 8 --max_length 2048
+
+#### Eval
+
+```sh
+python3 evaluation.py --type finetuned --peft_model_path peft_lab_outputs/500_sen_8196_r_4_1000/checkpoint-4500/ --max_tokens 8196
 ```
 
+## Servning Model
 
-## Serving the model in production
-
-## Creating ta LORA adaptor file from Checkpoint
+### Creating ta LORA adaptor file from Pytorch Checkpoint
 ```sh
 python3 convert_lora_to_gguf.py \
   ~/Documents/projects/role-embedding/peft_lab_outputs/test_run_base/checkpoint-21/ \
@@ -52,9 +58,8 @@ python3 convert_lora_to_gguf.py \
 
 ```
 
-## Running llm.cpp
-llama_env needs to activate
-
+### Running will llama.cpp
+- llama_env needs to activate
 
 #### Base
 ```sh
@@ -66,28 +71,13 @@ llama-server -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 --port 11434 --embeddings
 llama-server -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 --port 11434 --lora ~/Documents/projects/role-embedding/peft_lab_outputs/test_run_base/checkpoint-21/checkpoint-21-F16-LoRA.gguf --embeddings
 ```
 
+llama-server -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 --port 11434 --lora ~/Documents/projects/role-embedding/peft_lab_outputs/500_sen_8196_r_4_1000/checkpoint-2700/checkpoint-2700-Q8_0-LoRA.gguf --embeddings
 
 
-## Running with ollama
-
-### MakeFile
-
-```MakeFile
-FROM hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
-ADAPTER /Users/avashist/Documents/projects/role-embedding/peft_lab_outputs/test_run_base/checkpoint-21/checkpoint-21-F16-LoRA.gguf
-```
-
-### Running the model
-```sh
-ollama create model_name -f ./Modelfile
-```
+llama-server -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 --port 11434 --lora ~/Documents/projects/role-embedding/peft_lab_outputs/500_sen_8196_r_4_1000/checkpoint-4550/checkpoint-4550--LoRA.gguf --embeddings
 
 
-## Running Training Pipeline 
 
-```sh
-python src/quantized_finetuning_v2.py \
-  --run_name eval_test \
-  --dataset_path datasets/training_set/10_ner.json \
-  --num_of_epochs 10 --from_checkpoint true
-```
+Medium artical about the following code base
+
+https://sarinsuriyakoon.medium.com/unsloth-lora-with-ollama-lightweight-solution-to-full-cycle-llm-development-edadb6d9e0f0

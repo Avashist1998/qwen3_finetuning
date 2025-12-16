@@ -6,6 +6,18 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from itertools import combinations
+import os
+import glob
+
+def has_checkpoint(output_directory):
+    """
+    Check if there are any checkpoints in the output directory.
+    """
+    checkpoint_path = os.path.join(output_directory, "checkpoint-*")
+    checkpoint_files = glob.glob(checkpoint_path)
+    return len(checkpoint_files) > 0
+
+
 
 def mean_intra_inter_pytorch(embeddings, job_roles):
     """

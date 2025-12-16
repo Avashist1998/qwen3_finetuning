@@ -8,25 +8,29 @@ from transformers import AutoTokenizer
 from transformers import AutoModel
 from peft import LoraConfig, get_peft_model, TaskType
 import argparse
+from datasets import load_dataset
 from datetime import datetime
 from src.dataloader import preprocess_function
 from src.sentence_traininer import SentencePairTrainer, compute_metrics
+from src.utils import has_checkpoint
 
 
-R = 1 # r=2, r=4, # Change to 2 to make on mac
-
-def model_loader(model_id: str) -> Tuple[AutoModel, AutoTokenizer]:
+def model_loader(model_id: str, r: int) -> Tuple[AutoModel, AutoTokenizer]:
     """
     Load the model and tokenizer.
     """
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     base_model = AutoModel.from_pretrained(model_id)
     # base_model = AutoModel.from_pretrained(model_id, attn_implementation="flash_attention_2")
+
+    alpha = 16//r
     lora_config = LoraConfig(
         
-        r=R,
-        lora_alpha=16,
+        r=r,
+        lora_alpha=alpha,
         target_modules=["q_proj", "v_proj"],
+        # target_modules=["query", "value"],
+        # target_modules=["query"],
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.FEATURE_EXTRACTION,
@@ -39,12 +43,20 @@ def main(args):
     
     # Load training dataset
     dataset_name = args.dataset_path
-    dataset = Dataset.from_json(dataset_name)
+    # dataset = Dataset.from_json(dataset_name)
+    # Streaming needs to set to true when doing the large run
+    streaming = False
 
-    # Load or create validation dataset
+    dataset = load_dataset("json", data_files=dataset_name, streaming=streaming, split="train")
+    general_eval_dataset = load_dataset("json", data_files="datasets/evaluation_set/500_general_eval_set.json", streaming=streaming, split="train")
+
+    # # Load or create validation dataset
     if args.eval_dataset_path:
         print(f"Loading validation dataset from: {args.eval_dataset_path}")
         eval_dataset = Dataset.from_json(args.eval_dataset_path)
+        if args.evalset_size:
+            eval_dataset = eval_dataset.select(range(args.evalset_size))
+            general_eval_dataset = load_dataset("json", data_files="datasets/evaluation_set/500_general_eval_set.json", streaming=streaming, split="train").select(range(args.evalset_size))
     else:
         # Split dataset into train and validation
         print(f"Splitting dataset with validation ratio: {args.validation_split}")
@@ -53,6 +65,7 @@ def main(args):
         eval_dataset = dataset.select(range(split_idx, len(dataset)))
         dataset = dataset.select(range(split_idx))
 
+    eval_dataset = {'primary': eval_dataset, 'general': general_eval_dataset}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -60,23 +73,20 @@ def main(args):
     output_directory = os.path.join(working_dir, "peft_lab_outputs")
     print(f"Output directory: {output_directory}/{args.run_name}")
 
-    # Debug: print first example to see structure
-    print(f"Training dataset: {dataset.shape}")
-    print(f"Validation dataset: {eval_dataset.shape}")
-    print("Dataset columns:", dataset.column_names)
-
-
-    # model_id = "Qwen/Qwen3-Embedding-0.6B"
-    model_id = args.model_id
-    model, tokenizer = model_loader(model_id)
-
-
-    if args.dataset_size:
-        dataset = dataset.select(range(args.dataset_size))
-        eval_dataset = eval_dataset.select(range(min(args.dataset_size // 5, len(eval_dataset))))
-
+    # Debug: print dataset and eval_dataset structure
     print(f"Training dataset size: {len(dataset)}")
     print(f"Validation dataset size: {len(eval_dataset)}")
+    print(f"General evaluation dataset size: {len(general_eval_dataset)}")
+    print("Dataset columns:", dataset.column_names)
+
+    model, tokenizer = model_loader(args.model_id, args.r)
+
+    if args.dataset_size:
+        dataset = dataset.take(args.dataset_size)
+
+    # if args.dataset_size:
+    #     dataset = dataset.select(range(args.dataset_size))
+    #     eval_dataset = eval_dataset.select(range(min(args.dataset_size // 5, len(eval_dataset))))
 
     # # Tokenize both datasets use this one the gpu memory issue
     # tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, num_proc=16, load_from_cache_file=False, keep_in_memory=True, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
@@ -84,12 +94,21 @@ def main(args):
 
     # Tokenize both datasets
     tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
-    tokenized_eval_dataset = eval_dataset.map(preprocess_function, batched=True, remove_columns=eval_dataset.column_names, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
+    tokenized_eval_dataset = {'primary': None}
+    for key in eval_dataset.keys():
+        tokenized_eval_dataset[key] = eval_dataset[key].map(preprocess_function, batched=True, remove_columns=eval_dataset[key].column_names, fn_kwargs={"tokenizer": tokenizer, "max_length": args.max_length})
     
     ## Set the format of the tokenized datasets to torch
-    tokenized_dataset.set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
-    tokenized_eval_dataset.set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
-
+    # tokenized_eval_dataset = tokenized_eval_dataset.with_format("torch", ['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+    if streaming:
+        tokenized_dataset.set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+        for key in tokenized_eval_dataset.keys():
+            tokenized_eval_dataset[key] = tokenized_eval_dataset[key].set_format(type='torch', columns=['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+    else:
+        tokenized_dataset = tokenized_dataset.with_format('torch', ['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+        for key in tokenized_eval_dataset.keys():
+            tokenized_eval_dataset[key] = tokenized_eval_dataset[key].with_format("torch", ['input_ids_1', 'attention_mask_1', 'input_ids_2', 'attention_mask_2', 'labels'])
+            
     # # Validate the tokenized datasets
     # validate_dataset(tokenized_dataset)
     # validate_dataset(tokenized_eval_dataset)
@@ -105,18 +124,18 @@ def main(args):
         per_device_train_batch_size=4, # Change to 2 for mac
         per_device_eval_batch_size=4,  # Larger batch size for evaluation
         gradient_accumulation_steps=4,
-        use_cpu=device == "cpu",
-        bf16=device != "cpu", # Specific for the training
-        # bf16=False,
+        use_cpu=device.type == "cpu",
+        bf16=device.type != "cpu", # Specific for the training
         save_strategy="steps",  # Changed to match eval_strategy
-        save_steps=50,  # Save at same frequency as eval
+        save_steps=50,  # Save at same frequency as eval and >= eval_steps
         save_total_limit=5,
         remove_unused_columns=False,
         label_names=["labels"],
+        dataloader_num_workers=2,
 
         # Evaluation settings
         load_best_model_at_end=True,  # Load best model at the end
-        metric_for_best_model="eval_mse",  # Use MSE to determine best model
+        metric_for_best_model="eval_primary_mse",
         eval_strategy="steps",
         eval_steps=50,
         greater_is_better=False,  # Lower MSE is better
@@ -139,16 +158,20 @@ def main(args):
         compute_metrics=compute_metrics,
     )
 
-    # Train the model
-    train_result = trainer.train(resume_from_checkpoint=args.from_checkpoint)
+    if args.from_checkpoint and has_checkpoint(output_directory):
+        print(f"Training from checkpoint")
+        train_result = trainer.train(resume_from_checkpoint=True)
+    else:
+        print(f"Training from scratch")
+        train_result = trainer.train()
     
     # Save the final model
-    trainer.save_model(os.path.join(output_directory, args.run_name))
-    
+    model_path = os.path.join(output_directory, args.run_name)
+    trainer.save_model(model_path)
     # Save training metrics
     metrics = train_result.metrics
     metrics["train_samples"] = len(tokenized_dataset)
-    metrics["eval_samples"] = len(tokenized_eval_dataset)
+    metrics["eval_samples"] = len(tokenized_eval_dataset["primary"])
     
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
@@ -197,21 +220,26 @@ def quantization_args():
     parser.add_argument("--dataset_size", type=int, default=None,
                         help="Limit dataset size for faster experimentation (default: use all data)")
     
+    parser.add_argument("--evalset_size", type=int, default=None,
+                        help="Limit evaluation dataset size for faster experimentation (default: use all data)")
 
-    parser.add_argument("--from_checkpoint", type=bool, default=None,
-                        help="Path to checkpoint to load from")
+    parser.add_argument("--from_checkpoint", type=bool, default=False,
+                        help="Load from checkpoint")
 
 
     parser.add_argument("--max_length", type=int, default=512,
                         help="Maximum length of the input tokens")
+    
+
+    parser.add_argument("--r", type=int, default=1,
+                        help="Rank of the LoRA matrix (R = 1 # r=2, r=4, # Change to 2 to make on mac)")
 
     return parser.parse_args()
 
 if __name__ == "__main__":
 
+    
     args = quantization_args()
-
-
-    args.run_name = f'r{R}_max_length{args.max_length}_dataset_size{args.dataset_size}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
+    args.run_name = f'{args.model_id}_r_{args.r}_max_length{args.max_length}_dataset_size{args.dataset_size}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
     main(args)
 
