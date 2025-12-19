@@ -240,6 +240,6 @@ if __name__ == "__main__":
 
     
     args = quantization_args()
-    args.run_name = f'{args.model_id}_r_{args.r}_max_length{args.max_length}_dataset_size{args.dataset_size}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
+    args.run_name = f'{args.model_id}_r_{args.r}_max_length{args.max_length}_dataset_size{args.dataset_size}_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
     main(args)
 
